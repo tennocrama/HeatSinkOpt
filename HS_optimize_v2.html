@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generative Heat Sink Optimizer (Single Thread)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; display: flex; margin: 0; background: #f4f4f9; height: 100vh; }
+        .sidebar { width: 340px; padding: 20px; background: #fff; box-shadow: 2px 0 5px rgba(0,0,0,0.1); overflow-y: auto; z-index: 10; }
+        .main { flex-grow: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; background: #fafafa; overflow-y: auto;}
+        .control-group { margin-bottom: 12px; }
+        label { display: block; font-size: 0.85em; font-weight: bold; margin-bottom: 4px; color: #333; }
+        input[type="number"], input[type="file"] { width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+        .file-note { font-size: 0.75em; color: #666; margin-top: 4px; display: block; }
+        button { background: #007bff; color: white; border: none; padding: 10px 15px; width: 100%; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px;}
+        button:hover { background: #0056b3; }
+        button:disabled { background: #aaa; cursor: not-allowed; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #218838; }
+        .btn-csv { background: #17a2b8; }
+        .btn-csv:hover { background: #138496; }
+        .btn-comsol { background: #fd7e14; }
+        .btn-comsol:hover { background: #e86e04; }
+        .btn-opt { background: #6f42c1; }
+        .btn-opt:hover { background: #5a32a3; }
+        .btn-stop { background: #dc3545; display: none; }
+        .btn-stop:hover { background: #c82333; }
+        .btn-dash { background: #343a40; }
+        .btn-dash:hover { background: #23272b; }
+        
+        .canvas-container { position: relative; margin-top: 10px; width: 800px; display: flex; justify-content: center; padding: 0; }
+        canvas#simCanvas { background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #ddd; cursor: crosshair; width: 100%; height: auto; display: block; }
+        .charts-container { display: flex; gap: 15px; width: 800px; margin-top: 15px; }
+        .chart-box { flex: 1; min-width: 0; background: #fff; border: 1px solid #ddd; border-radius: 5px; padding: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); height: 200px; position: relative; }
+        .bottom-panel { display: flex; gap: 20px; width: 800px; margin-top: 15px; }
+
+        #overlayMsg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 1.2em; color: #777; font-weight: bold; background: rgba(255,255,255,0.8); pointer-events: none; }
+        .status { margin-top: 10px; font-weight: bold; color: #555; text-align: center; }
+        h3 { margin-top: 0; font-size: 1.1em; color: #0056b3;}
+        hr { border: 0; border-top: 1px solid #eee; margin: 15px 0; }
+        
+        .input-summary-container, .results-container { padding: 15px; background: #fff; border: 1px solid #ddd; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .input-summary-container { flex: 1.6; }
+        .results-container { flex: 1; display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; gap: 10px; }
+        .input-summary-container h4 { margin-top: 0; font-size: 1.1em; color: #0056b3; margin-bottom: 10px; text-align: center; }
+        .input-list { list-style: none; padding: 0; margin: 0; font-size: 0.9em; color: #333; }
+        .input-list li { display: flex; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px dashed #eee; padding-bottom: 2px; }
+        .input-list li span:last-child { font-weight: bold; color: #007bff; }
+        
+        .result-item { font-size: 1em; color: #333; width: 100%; }
+        .result-value { font-weight: bold; color: #007bff; font-size: 1.1em; }
+        #hoverInfo { font-size: 1.1em; font-weight: bold; color: #d9534f; width: 100%; text-align: center; margin-bottom: 0px;}
+        .flex-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .clear-btn { background: #dc3545; color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 0.75em; cursor: pointer; width: auto; margin: 0; font-weight: normal; }
+        .clear-btn:hover { background: #c82333; }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h3>1. Geometry Setup</h3>
+    <div class="control-group">
+        <div class="flex-label">
+            <label style="margin:0;">Seed Image (Optional)</label>
+            <button class="clear-btn" onclick="clearImage()">Clear</button>
+        </div>
+        <input type="file" id="imageUpload" accept="image/png, image/jpeg, image/bmp">
+        <span class="file-note">Base is anchored to bottom-most row.</span>
+    </div>
+    <div class="control-group"><label>Base Width (mm)</label><input type="number" id="baseWidth" value="60"></div>
+    <div class="control-group"><label>Base Height (mm)</label><input type="number" id="baseHeight" value="6.25" step="0.25"></div>
+    <div class="control-group"><label>Extruded Depth (mm)</label><input type="number" id="depth" value="60"></div>
+    
+    <hr>
+    <h3>2. Mesh Resolution</h3>
+    <div class="control-group"><label>Image Grid Res (nx cells) [If Image]</label><input type="number" id="gridRes" value="150"></div>
+    <div class="control-group"><label>Blank Domain Width (mm) [If Blank]</label><input type="number" id="domainWidth" value="100"></div>
+    <div class="control-group"><label>Blank Domain Height (mm) [If Blank]</label><input type="number" id="domainHeight" value="40"></div>
+    <div class="control-group"><label>Blank Cell Size (mm) [If Blank]</label><input type="number" id="featureSize" value="1.25" step="0.25"></div>
+
+    <hr>
+    <h3>3. Thermal Physics</h3>
+    <div class="control-group"><label>k_solid (W/mK)</label><input type="number" id="kCond" value="115"></div>
+    <div class="control-group"><label>Density (kg/m³)</label><input type="number" id="rho" value="2700"></div>
+    <div class="control-group"><label>h_conv (W/m²K)</label><input type="number" id="hConv" value="50.37"></div>
+    <div class="control-group"><label>T_inf (°C)</label><input type="number" id="tInf" value="20"></div>
+    <div class="control-group"><label>Background Flux (W/cm²)</label><input type="number" id="qBg" value="0.5" step="0.1"></div>
+    <div class="control-group"><label>Hotspot Flux (W/cm²)</label><input type="number" id="qHs" value="15" step="1"></div>
+    <div class="control-group"><label>Hotspot Width (mm)</label><input type="number" id="hsWidth" value="12" step="1"></div>
+    <div class="control-group"><label>Max Thermal Iterations</label><input type="number" id="thermalIters" value="1500"></div>
+
+    <hr>
+    <h3>4. Optimizer Settings</h3>
+    <div class="control-group"><label>Max Optimization Iters</label><input type="number" id="optIters" value="500"></div>
+    <div class="control-group"><label>Opt Convergence Tol (%)</label><input type="number" id="optTol" value="0.001" step="0.0001"></div>
+    <div class="control-group"><label>Opt Patience (iters)</label><input type="number" id="optPatience" value="50"></div>
+    
+    <hr>
+    <h3>Actions</h3>
+    <button class="btn-success" id="solveBtn" onclick="startExecution(false)">Solve Current</button>
+    <button class="btn-opt" id="optBtn" onclick="startExecution(true)">Optimize Topology</button>
+    <button class="btn-stop" id="stopBtn" onclick="stopOptimization()">Stop Optimization</button>
+    
+    <hr>
+    <h3>Export & Output</h3>
+    <button class="btn-dash" onclick="downloadDashboard()">Download Full Dashboard</button>
+    <button class="btn-success" onclick="downloadCanvas()">Download Heat Map (PNG)</button>
+    <button class="btn-csv" id="csvBtn" onclick="downloadCSV()" disabled>Download Heat Map (CSV)</button>
+    <button class="btn-comsol" id="comsolBtn" onclick="exportCOMSOLMask()" disabled>Export COMSOL Mask</button>
+    <div class="status" id="status" style="color: #333;">Status: Ready</div>
+</div>
+
+<div class="main" id="dashboardArea">
+    <h2 style="margin: 0; color: #333;">Thermal Profile</h2>
+    
+    <div class="canvas-container">
+        <canvas id="simCanvas" width="800" height="400"></canvas>
+        <div id="overlayMsg">Run optimization or upload image</div>
+    </div>
+
+    <div class="charts-container">
+        <div class="chart-box"><canvas id="qChart"></canvas></div>
+        <div class="chart-box"><canvas id="mChart"></canvas></div>
+        <div class="chart-box"><canvas id="fomChart"></canvas></div>
+    </div>
+    
+    <div class="bottom-panel">
+        <div class="input-summary-container">
+            <h4>Input Summary</h4>
+            <div id="inputSummaryOut">
+                <ul class="input-list">
+                    <li><span>Awaiting Calculation...</span></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="results-container">
+            <div id="hoverInfo">Cursor Temp: -- °C</div>
+            <div class="result-item">Max Temperature: <br><span class="result-value" id="tMaxOut">-- °C</span></div>
+            <div class="result-item">Input Power: <br><span class="result-value" id="qTotalOut">-- W</span></div>
+            <div class="result-item">Heat Sink Mass: <br><span class="result-value" id="massOut">-- kg</span></div>
+            <div class="result-item">Figure of Merit: <br><span class="result-value" id="fomOut">-- W/(kg K)</span></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let uploadedImage = null; let globalT = []; let globalIsSolid = [];
+    let globalNx = 0; let globalNy = 0; let globalTInf = 20; let globalTMax = 100;
+    let isOptimizing = false;
+
+    let chartQ, chartM, chartFOM;
+
+    function initCharts() {
+        const basePlugins = { legend: { display: false } };
+        const commonOptions = { responsive: true, maintainAspectRatio: false, animation: false, elements: { point: { radius: 0 }, line: { borderWidth: 2 } }, scales: { x: { display: false } } };
+        if(chartQ) chartQ.destroy(); if(chartM) chartM.destroy(); if(chartFOM) chartFOM.destroy();
+        chartQ = new Chart(document.getElementById('qChart'), { type: 'line', data: { labels: [], datasets: [{ data: [], borderColor: '#dc3545', tension: 0.1 }] }, options: { ...commonOptions, plugins: { ...basePlugins, title: { display: true, text: 'Max Temp (°C)', font: {size: 14} } } } });
+        chartM = new Chart(document.getElementById('mChart'), { type: 'line', data: { labels: [], datasets: [{ data: [], borderColor: '#28a745', tension: 0.1 }] }, options: { ...commonOptions, plugins: { ...basePlugins, title: { display: true, text: 'Mass (kg)', font: {size: 14} } } } });
+        chartFOM = new Chart(document.getElementById('fomChart'), { type: 'line', data: { labels: [], datasets: [{ data: [], borderColor: '#007bff', tension: 0.1 }] }, options: { ...commonOptions, plugins: { ...basePlugins, title: { display: true, text: 'Figure of Merit (W/kg·K)', font: {size: 14} } } } });
+    }
+
+    function updateCharts(iter, tMax, m, fom) {
+        chartQ.data.labels.push(iter); chartQ.data.datasets[0].data.push(tMax); chartQ.update();
+        chartM.data.labels.push(iter); chartM.data.datasets[0].data.push(m); chartM.update();
+        chartFOM.data.labels.push(iter); chartFOM.data.datasets[0].data.push(fom); chartFOM.update();
+    }
+
+    // --- PURE MATH FUNCTIONS ---
+    function hasCheckerboard(grid, nx, ny) {
+        for (let i = 0; i < nx - 1; i++) {
+            for (let j = 0; j < ny - 1; j++) {
+                let sum = (grid[i][j]?1:0) + (grid[i+1][j]?1:0) + (grid[i][j+1]?1:0) + (grid[i+1][j+1]?1:0);
+                if (sum === 2 && (grid[i][j] === grid[i+1][j+1]) && (grid[i][j] !== grid[i+1][j])) return true;
+            }
+        }
+        return false;
+    }
+
+    function isConnected(grid, nx, ny, baseMinI, baseMaxI, baseMinJ, baseMaxJ) {
+        let visited = Array(nx).fill().map(() => Array(ny).fill(false));
+        let queue = []; let solidCount = 0;
+        for (let i = 0; i < nx; i++) {
+            for (let j = 0; j < ny; j++) {
+                if (grid[i][j]) {
+                    solidCount++;
+                    // Base cells are the roots
+                    if (i >= baseMinI && i <= baseMaxI && j >= baseMinJ && j <= baseMaxJ) { 
+                        queue.push([i, j]); visited[i][j] = true; 
+                    }
+                }
+            }
+        }
+        let connectedCount = 0; let head = 0; 
+        while (head < queue.length) {
+            let [cx, cy] = queue[head++]; connectedCount++;
+            const dirs = [[0,1], [0,-1], [1,0], [-1,0]];
+            for (let d of dirs) {
+                let ni = cx + d[0]; let nj = cy + d[1];
+                if (ni >= 0 && ni < nx && nj >= 0 && nj < ny && grid[ni][nj] && !visited[ni][nj]) {
+                    visited[ni][nj] = true; queue.push([ni, nj]);
+                }
+            }
+        }
+        return connectedCount === solidCount;
+    }
+
+    function solveThermalGrid(isSolidGrid, p) {
+        let T = Array(p.nx).fill().map(() => Array(p.ny).fill(p.tInf + 10));
+        const K_cond = p.kCond; const K_conv_x = p.hConv * p.dy; const K_conv_y = p.hConv * p.dx;
+        const center_mm = ((p.baseMinI + p.baseMaxI) / 2 + 0.5) * p.dx * 1000;
+        
+        let qInput = 0;
+        for (let i = p.baseMinI; i <= p.baseMaxI; i++) {
+            if (isSolidGrid[i][p.baseMaxJ]) {
+                let x_mm = (i + 0.5) * p.dx * 1000;
+                let flux = (Math.abs(x_mm - center_mm) <= p.hsWidth / 2) ? p.qHs : p.qBg;
+                qInput += flux * p.dx * p.depth_m;
+            }
+        }
+
+        let iter = 0; let maxChange = 1; const tolerance = 0.005; const omega = 1.7; 
+
+        while (iter < p.maxThermalIters) {
+            maxChange = 0;
+            for (let i = 0; i < p.nx; i++) {
+                for (let j = 0; j < p.ny; j++) {
+                    if (!isSolidGrid[i][j]) continue;
+                    let sumKT = 0; let sumK = 0;
+
+                    if (i > 0 && isSolidGrid[i-1][j]) { sumKT += K_cond * T[i-1][j]; sumK += K_cond; } else { sumKT += K_conv_x * p.tInf; sumK += K_conv_x; }
+                    if (i < p.nx - 1 && isSolidGrid[i+1][j]) { sumKT += K_cond * T[i+1][j]; sumK += K_cond; } else { sumKT += K_conv_x * p.tInf; sumK += K_conv_x; }
+                    if (j > 0 && isSolidGrid[i][j-1]) { sumKT += K_cond * T[i][j-1]; sumK += K_cond; } else { sumKT += K_conv_y * p.tInf; sumK += K_conv_y; }
+                    
+                    let isBaseBottom = (j === p.baseMaxJ && i >= p.baseMinI && i <= p.baseMaxI);
+                    if (j < p.ny - 1 && isSolidGrid[i][j+1]) { 
+                        sumKT += K_cond * T[i][j+1]; sumK += K_cond; 
+                    } else if (isBaseBottom) {
+                        let x_mm = (i + 0.5) * p.dx * 1000; let flux = (Math.abs(x_mm - center_mm) <= p.hsWidth / 2) ? p.qHs : p.qBg; sumKT += flux * p.dx; 
+                    } else { sumKT += K_conv_y * p.tInf; sumK += K_conv_y; }
+
+                    let oldT = T[i][j]; let calculatedT = sumKT / sumK; let newT = oldT + omega * (calculatedT - oldT);
+                    let change = Math.abs(newT - oldT); if (change > maxChange) maxChange = change;
+                    T[i][j] = newT;
+                }
+            }
+
+            if (iter % 15 === 0) {
+                let qOut = 0; let sum_hA = 0;
+                for (let i = 0; i < p.nx; i++) {
+                    for (let j = 0; j < p.ny; j++) {
+                        if (!isSolidGrid[i][j]) continue;
+                        if (i === 0 || !isSolidGrid[i-1][j]) { let hA = p.hConv * (p.dy * p.depth_m); qOut += hA * (T[i][j] - p.tInf); sum_hA += hA; }
+                        if (i === p.nx - 1 || !isSolidGrid[i+1][j]) { let hA = p.hConv * (p.dy * p.depth_m); qOut += hA * (T[i][j] - p.tInf); sum_hA += hA; }
+                        if (j === 0 || !isSolidGrid[i][j-1]) { let hA = p.hConv * (p.dx * p.depth_m); qOut += hA * (T[i][j] - p.tInf); sum_hA += hA; }
+                        
+                        let isBaseBottom = (j === p.baseMaxJ && i >= p.baseMinI && i <= p.baseMaxI);
+                        if (!isBaseBottom) {
+                            if (j === p.ny - 1 || !isSolidGrid[i][j+1]) { let hA = p.hConv * (p.dx * p.depth_m); qOut += hA * (T[i][j] - p.tInf); sum_hA += hA; }
+                        }
+                    }
+                }
+                if (sum_hA > 0) {
+                    let shift = (qInput - qOut) / sum_hA;
+                    for (let i = 0; i < p.nx; i++) { for (let j = 0; j < p.ny; j++) { if (isSolidGrid[i][j]) { T[i][j] += shift; } } }
+                    if (maxChange <= tolerance) maxChange = tolerance * 2; 
+                }
+            }
+            if (maxChange <= tolerance && iter > 50) break;
+            iter++;
+        }
+
+        let qDissipated = 0; let solidCellCount = 0; let tMax = p.tInf;
+        for (let i = 0; i < p.nx; i++) {
+            for (let j = 0; j < p.ny; j++) {
+                if (!isSolidGrid[i][j]) continue;
+                solidCellCount++;
+                if (T[i][j] > tMax) tMax = T[i][j];
+                if (i === 0 || !isSolidGrid[i-1][j]) qDissipated += p.hConv * (p.dy * p.depth_m) * (T[i][j] - p.tInf);
+                if (i === p.nx - 1 || !isSolidGrid[i+1][j]) qDissipated += p.hConv * (p.dy * p.depth_m) * (T[i][j] - p.tInf);
+                if (j === 0 || !isSolidGrid[i][j-1]) qDissipated += p.hConv * (p.dx * p.depth_m) * (T[i][j] - p.tInf);
+                
+                let isBaseBottom = (j === p.baseMaxJ && i >= p.baseMinI && i <= p.baseMaxI);
+                if (!isBaseBottom) {
+                    if (j === p.ny - 1 || !isSolidGrid[i][j+1]) qDissipated += p.hConv * (p.dx * p.depth_m) * (T[i][j] - p.tInf); 
+                }
+            }
+        }
+
+        const cellVolume_m3 = p.dx * p.dy * p.depth_m; const meshMass = solidCellCount * cellVolume_m3 * p.rho;
+        const deltaT = tMax - p.tInf; const fom = (deltaT > 0 && meshMass > 0) ? (qInput / (deltaT * meshMass)) : 0;
+        return { T, qDissipated, qInput, meshMass, fom, tMax, iter };
+    }
+
+    // --- INTERFACE AND EXECUTION LOGIC ---
+
+    function stopOptimization() {
+        isOptimizing = false;
+        document.getElementById('optBtn').disabled = false;
+        document.getElementById('solveBtn').disabled = false;
+        document.getElementById('stopBtn').style.display = 'none';
+        document.getElementById('status').innerText = "Status: Optimization Stopped.";
+    }
+
+    document.getElementById('imageUpload').addEventListener('change', function(e) {
+        const file = e.target.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            uploadedImage = new Image();
+            uploadedImage.onload = function() {
+                document.getElementById('overlayMsg').style.display = 'none';
+                document.getElementById('status').innerText = "Status: Image loaded. Ready to solve/optimize.";
+                
+                canvas.height = Math.round(canvas.width * (uploadedImage.height / uploadedImage.width));
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(uploadedImage, 0, 0, canvas.width, canvas.height);
+            }
+            uploadedImage.src = event.target.result;
+        }
+        reader.readAsDataURL(file);
+    });
+
+    function clearImage() {
+        uploadedImage = null;
+        document.getElementById('imageUpload').value = '';
+        document.getElementById('overlayMsg').innerText = 'Blank Canvas Ready';
+        document.getElementById('overlayMsg').style.display = 'flex';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        document.getElementById('status').innerText = "Status: Reverted to Blank Canvas.";
+    }
+
+    async function startExecution(doOptimize) {
+        document.getElementById('overlayMsg').style.display = 'none';
+        document.getElementById('solveBtn').disabled = true;
+        document.getElementById('optBtn').disabled = true;
+        document.getElementById('stopBtn').style.display = doOptimize ? 'block' : 'none';
+        document.getElementById('csvBtn').disabled = true;
+        document.getElementById('comsolBtn').disabled = true;
+        
+        isOptimizing = doOptimize;
+        if(doOptimize) { initCharts(); }
+
+        const baseWidthInput = parseFloat(document.getElementById('baseWidth').value);
+        const baseHeightInput = parseFloat(document.getElementById('baseHeight').value);
+        const depth = parseFloat(document.getElementById('depth').value);
+        const kCond = parseFloat(document.getElementById('kCond').value);
+        const rho = parseFloat(document.getElementById('rho').value);
+        const hConv = parseFloat(document.getElementById('hConv').value);
+        const tInf = parseFloat(document.getElementById('tInf').value);
+        const qBg = parseFloat(document.getElementById('qBg').value) * 10000;
+        const qHs = parseFloat(document.getElementById('qHs').value) * 10000;
+        const hsWidth = parseFloat(document.getElementById('hsWidth').value);
+        const maxThermalIters = parseInt(document.getElementById('thermalIters').value) || 1000;
+        const depth_m = depth / 1000;
+
+        let nx, ny, dx, dy, baseMinI, baseMaxI, baseMinJ, baseMaxJ;
+        let currentGrid;
+
+        // Image Mapping vs Blank Canvas Generation
+        if (uploadedImage) {
+            nx = parseInt(document.getElementById('gridRes').value) || 150;
+            ny = Math.round(nx * (uploadedImage.height / uploadedImage.width));
+            
+            const offCanvas = document.createElement('canvas');
+            offCanvas.width = nx; offCanvas.height = ny;
+            const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+            offCtx.drawImage(uploadedImage, 0, 0, nx, ny);
+            const imgData = offCtx.getImageData(0, 0, nx, ny).data;
+
+            currentGrid = Array(nx).fill().map(() => Array(ny).fill(false));
+            let bottomMostSolidRow = 0;
+
+            for (let j = 0; j < ny; j++) {
+                for (let i = 0; i < nx; i++) {
+                    const idx = (j * nx + i) * 4;
+                    const brightness = (imgData[idx] + imgData[idx+1] + imgData[idx+2]) / 3;
+                    const alpha = imgData[idx+3];
+                    if (brightness < 128 && alpha > 128) {
+                        currentGrid[i][j] = true;
+                        if (j > bottomMostSolidRow) bottomMostSolidRow = j;
+                    }
+                }
+            }
+
+            baseMinI = nx; baseMaxI = -1;
+            for (let i = 0; i < nx; i++) {
+                if (currentGrid[i][bottomMostSolidRow]) {
+                    if (i < baseMinI) baseMinI = i;
+                    if (i > baseMaxI) baseMaxI = i;
+                }
+            }
+            if (baseMaxI < baseMinI) { baseMinI = 0; baseMaxI = nx-1; bottomMostSolidRow = ny-1; } 
+            
+            let baseWidthCells = (baseMaxI - baseMinI + 1);
+            dx = (baseWidthInput / 1000) / baseWidthCells; 
+            dy = dx;
+
+            let baseHeightCells = Math.max(1, Math.round((baseHeightInput / 1000) / dy));
+            baseMaxJ = bottomMostSolidRow;
+            baseMinJ = Math.max(0, baseMaxJ - baseHeightCells + 1);
+            
+            for (let i = baseMinI; i <= baseMaxI; i++) {
+                for (let j = baseMinJ; j <= baseMaxJ; j++) {
+                    currentGrid[i][j] = true;
+                }
+            }
+        } else {
+            let domainWidth = parseFloat(document.getElementById('domainWidth').value);
+            let domainHeight = parseFloat(document.getElementById('domainHeight').value);
+            let featureSize = parseFloat(document.getElementById('featureSize').value);
+            
+            nx = Math.round(domainWidth / featureSize);
+            ny = Math.round(domainHeight / featureSize);
+            dx = (featureSize / 1000);
+            dy = dx;
+            
+            let baseWidthCells = Math.round(baseWidthInput / featureSize);
+            let baseHeightCells = Math.max(1, Math.round(baseHeightInput / featureSize));
+            
+            baseMinI = Math.floor((nx - baseWidthCells) / 2);
+            baseMaxI = baseMinI + baseWidthCells - 1;
+            baseMaxJ = ny - 1;
+            baseMinJ = Math.max(0, baseMaxJ - baseHeightCells + 1);
+            
+            currentGrid = Array(nx).fill().map(() => Array(ny).fill(false));
+            for (let i = baseMinI; i <= baseMaxI; i++) {
+                for (let j = baseMinJ; j <= baseMaxJ; j++) {
+                    currentGrid[i][j] = true;
+                }
+            }
+        }
+
+        globalNx = nx; globalNy = ny; globalTInf = tInf;
+        const params = { nx, ny, dx, dy, depth_m, kCond, rho, hConv, tInf, qBg, qHs, hsWidth, baseMinI, baseMaxI, baseMinJ, baseMaxJ, maxThermalIters };
+
+        document.getElementById('status').innerText = "Status: Initial Evaluation...";
+        await new Promise(r => setTimeout(r, 50)); 
+
+        let bestEval = solveThermalGrid(currentGrid, params);
+        let bestGrid = currentGrid.map(row => [...row]);
+
+        if (!doOptimize) {
+            globalT = bestEval.T; globalTMax = bestEval.tMax; globalIsSolid = bestGrid;
+            renderCanvas(nx, ny, tInf, globalTMax);
+            
+            document.getElementById('tMaxOut').innerText = bestEval.tMax.toFixed(2) + " °C";
+            document.getElementById('qTotalOut').innerText = bestEval.qInput.toFixed(2) + " W";
+            document.getElementById('massOut').innerText = bestEval.meshMass.toFixed(5) + " kg";
+            document.getElementById('fomOut').innerText = bestEval.fom.toFixed(4) + " W/(kg K)";
+            
+            updateSummaryBox(nx*dx*1000, ny*dy*1000, baseHeightInput, depth, kCond, rho, hConv, tInf, qBg, qHs, hsWidth, nx, ny);
+            
+            document.getElementById('status').innerText = `Status: Solved in ${bestEval.iter} iterations.`;
+            document.getElementById('solveBtn').disabled = false;
+            document.getElementById('optBtn').disabled = false;
+            document.getElementById('csvBtn').disabled = false;
+            document.getElementById('comsolBtn').disabled = false;
+            return;
+        }
+
+        const maxIters = parseInt(document.getElementById('optIters').value);
+        const optTol = parseFloat(document.getElementById('optTol').value);
+        const optPatience = parseInt(document.getElementById('optPatience').value);
+        let iter = 0; let fomHistory = [];
+
+        // SINGLE-THREADED ASYNCHRONOUS LOOP
+        function optLoop() {
+            if (!isOptimizing || iter >= maxIters) {
+                stopOptimization();
+                let finalStatus = (iter < maxIters) ? `Status: Opt Converged (${iter} iters).` : `Status: Optimization Complete (${iter} iters).`;
+                document.getElementById('status').innerText = finalStatus;
+                document.getElementById('csvBtn').disabled = false;
+                document.getElementById('comsolBtn').disabled = false;
+                document.getElementById('fomOut').innerText = bestEval.fom.toFixed(4) + " W/(kg K)";
+                updateSummaryBox(nx*dx*1000, ny*dy*1000, baseHeightInput, depth, kCond, rho, hConv, tInf, qBg, qHs, hsWidth, nx, ny);
+                return;
+            }
+
+            fomHistory.push(bestEval.fom);
+
+            // Convergence check
+            if (iter >= optPatience) {
+                const pastFom = fomHistory[iter - optPatience];
+                if (pastFom > 0) {
+                    const percentChange = ((bestEval.fom - pastFom) / pastFom) * 100;
+                    if (percentChange < optTol) {
+                        isOptimizing = false; // Trigger exit on next tick
+                    }
+                }
+            }
+
+            document.getElementById('status').innerText = `Status: Single-Thread Search... Iteration ${iter+1}/${maxIters}`;
+            let addProb = 0.8 - 0.6 * (iter / maxIters);
+
+            // Execute ONE mutation and evaluation on the main thread
+            let testGrid = bestGrid.map(row => [...row]);
+            let mutated = false; let attempts = 0;
+            
+            while (!mutated && attempts < 150) {
+                attempts++;
+                let tryAdd = Math.random() < addProb;
+                let i = Math.floor(Math.random() * params.nx);
+                let j = Math.floor(Math.random() * params.ny); 
+
+                if (i >= params.baseMinI && i <= params.baseMaxI && j >= params.baseMinJ && j <= params.baseMaxJ) {
+                    continue;
+                }
+
+                if (tryAdd && !testGrid[i][j]) {
+                    let hasNeighbor = false;
+                    const dirs = [[0,1], [0,-1], [1,0], [-1,0]];
+                    for (let d of dirs) {
+                        let ni = i + d[0]; let nj = j + d[1];
+                        if (ni >= 0 && ni < params.nx && nj >= 0 && nj < params.ny && testGrid[ni][nj]) { hasNeighbor = true; break; }
+                    }
+                    if (hasNeighbor) {
+                        testGrid[i][j] = true;
+                        if (hasCheckerboard(testGrid, params.nx, params.ny) || !isConnected(testGrid, params.nx, params.ny, params.baseMinI, params.baseMaxI, params.baseMinJ, params.baseMaxJ)) { testGrid[i][j] = false; } 
+                        else { mutated = true; }
+                    }
+                } else if (!tryAdd && testGrid[i][j]) {
+                    testGrid[i][j] = false;
+                    if (hasCheckerboard(testGrid, params.nx, params.ny) || !isConnected(testGrid, params.nx, params.ny, params.baseMinI, params.baseMaxI, params.baseMinJ, params.baseMaxJ)) { testGrid[i][j] = true; } 
+                    else { mutated = true; }
+                }
+            }
+
+            if (mutated) {
+                let testEval = solveThermalGrid(testGrid, params);
+                if (testEval.fom > bestEval.fom) {
+                    bestGrid = testGrid;
+                    bestEval = testEval;
+                    
+                    // Only re-render when an improvement is found
+                    globalT = bestEval.T; globalTMax = bestEval.tMax; globalIsSolid = bestGrid;
+                    renderCanvas(nx, ny, tInf, globalTMax);
+                    document.getElementById('tMaxOut').innerText = bestEval.tMax.toFixed(2) + " °C";
+                    document.getElementById('qTotalOut').innerText = bestEval.qInput.toFixed(2) + " W";
+                    document.getElementById('massOut').innerText = bestEval.meshMass.toFixed(5) + " kg";
+                    document.getElementById('fomOut').innerText = bestEval.fom.toFixed(4) + " W/(kg K)";
+                }
+            }
+
+            updateCharts(iter, bestEval.tMax, bestEval.meshMass, bestEval.fom);
+            iter++;
+
+            // Yield to browser UI thread, then loop again
+            setTimeout(optLoop, 0); 
+        }
+
+        // Start the recursive loop
+        optLoop();
+    }
+
+    function renderCanvas(nx, ny, tInf, tMax) {
+        canvas.height = Math.round(canvas.width * (ny / nx)); 
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const cellW = canvas.width / nx;
+        const cellH = canvas.height / ny;
+
+        for (let i = 0; i < nx; i++) {
+            for (let j = 0; j < ny; j++) {
+                if (globalIsSolid[i][j]) {
+                    ctx.fillStyle = getColorForTemp(globalT[i][j], tInf, tMax);
+                } else {
+                    ctx.fillStyle = "#eef4fa"; 
+                }
+                ctx.fillRect(Math.floor(i * cellW), Math.floor(j * cellH), Math.ceil(cellW), Math.ceil(cellH));
+            }
+        }
+
+        const legendWidth = 20; const legendHeight = 150;
+        const legendX = canvas.width - 45; const legendY = 20;
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.fillRect(legendX - 60, legendY - 15, 95, legendHeight + 30);
+        ctx.strokeStyle = "#ccc"; ctx.strokeRect(legendX - 60, legendY - 15, 95, legendHeight + 30);
+
+        const gradient = ctx.createLinearGradient(0, legendY + legendHeight, 0, legendY);
+        gradient.addColorStop(0, "rgb(0, 0, 255)"); gradient.addColorStop(1, "rgb(255, 0, 0)"); 
+        ctx.fillStyle = gradient; ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
+        ctx.strokeStyle = "#333"; ctx.strokeRect(legendX, legendY, legendWidth, legendHeight);
+
+        ctx.fillStyle = "#333"; ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "right"; ctx.textBaseline = "middle";
+        ctx.fillText(`${tMax.toFixed(1)} °C`, legendX - 8, legendY);
+        ctx.fillText(`${tInf.toFixed(1)} °C`, legendX - 8, legendY + legendHeight);
+        const midTemp = (tMax + tInf) / 2; ctx.fillText(`${midTemp.toFixed(1)} °C`, legendX - 8, legendY + legendHeight / 2);
+    }
+
+    function updateSummaryBox(w, h, baseH, d, k, rho, hConv, tInf, qBg, qHs, hsWidth, nx, ny) {
+        let baseHStr = (typeof baseH === 'number') ? baseH.toFixed(2) : baseH;
+        const summaryHTML = `
+            <ul class="input-list">
+                <li><span>Domain Dimensions:</span> <span><i>W</i> = ${w.toFixed(1)} mm x <i>H</i> = ${h.toFixed(1)} mm (Base: ${baseHStr} mm)</span></li>
+                <li><span>Extruded Depth:</span> <span><i>D</i> = ${d} mm</span></li>
+                <li><span>Material:</span> <span><i>k</i> = ${k} W/mK, <i>ρ</i> = ${rho} kg/m³</span></li>
+                <li><span>Convection:</span> <span><i>h</i> = ${hConv} W/m²K, <i>T<sub>inf</sub></i> = ${tInf} °C</span></li>
+                <li><span>Bottom Flux:</span> <span>BG=${(qBg/10000).toFixed(1)}, HS=${(qHs/10000).toFixed(1)} W/cm² (W=${hsWidth}mm)</span></li>
+                <li><span>Mesh Size:</span> <span><i>nx</i> = ${nx} x <i>ny</i> = ${ny} cells</span></li>
+            </ul>
+        `;
+        document.getElementById('inputSummaryOut').innerHTML = summaryHTML;
+    }
+
+    function downloadCanvas() {
+        const link = document.createElement('a'); link.download = 'heatsink_profile.png'; link.href = canvas.toDataURL('image/png'); link.click();
+    }
+
+    function downloadDashboard() {
+        if (typeof html2canvas === 'undefined') {
+            alert("html2canvas library is not loaded. Please ensure you have an active internet connection."); return;
+        }
+        const dashboard = document.getElementById('dashboardArea');
+        const bodyOriginalHeight = document.body.style.height;
+        const dashOriginalOverflow = dashboard.style.overflow;
+        document.body.style.height = 'auto'; dashboard.style.overflow = 'visible';
+        
+        html2canvas(dashboard, { backgroundColor: '#fafafa', scale: 2, scrollY: -window.scrollY }).then(canvas => {
+            document.body.style.height = bodyOriginalHeight; dashboard.style.overflow = dashOriginalOverflow;
+            const link = document.createElement('a'); link.download = 'heatsink_dashboard_full.png'; link.href = canvas.toDataURL('image/png'); link.click();
+        }).catch(err => {
+            document.body.style.height = bodyOriginalHeight; dashboard.style.overflow = dashOriginalOverflow;
+            console.error("Dashboard capture failed:", err);
+        });
+    }
+
+    function downloadCSV() {
+        if (!globalT || globalT.length === 0) return;
+        let csvContent = "";
+        for (let j = 0; j < globalNy; j++) {
+            let row = [];
+            for (let i = 0; i < globalNx; i++) { row.push(globalT[i][j].toFixed(3)); }
+            csvContent += row.join(",") + "\n";
+        }
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a"); const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url); link.setAttribute("download", "temperature_map.csv");
+        link.style.visibility = 'hidden'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    }
+
+    function exportCOMSOLMask() {
+        if (!globalIsSolid || globalIsSolid.length === 0) return;
+        const scale = 20; const exportCanvas = document.createElement('canvas');
+        exportCanvas.width = globalNx * scale; exportCanvas.height = globalNy * scale;
+        const eCtx = exportCanvas.getContext('2d');
+        eCtx.fillStyle = "#FFFFFF"; eCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+        eCtx.fillStyle = "#000000";
+        for (let i = 0; i < globalNx; i++) {
+            for (let j = 0; j < globalNy; j++) {
+                if (globalIsSolid[i][j]) { eCtx.fillRect(Math.floor(i * scale), Math.floor(j * scale), Math.ceil(scale)+1, Math.ceil(scale)+1); }
+            }
+        }
+        const link = document.createElement('a'); link.download = 'comsol_geometry_mask.png'; link.href = exportCanvas.toDataURL('image/png'); link.click();
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!globalT || globalT.length === 0) return;
+        const rect = canvas.getBoundingClientRect(); const scaleX = canvas.width / rect.width; const scaleY = canvas.height / rect.height;
+        const x = (e.clientX - rect.left) * scaleX; const y = (e.clientY - rect.top) * scaleY;
+        const cellW = canvas.width / globalNx; const cellH = canvas.height / globalNy;
+        const i = Math.floor(x / cellW); const j = Math.floor(y / cellH);
+        if (i >= 0 && i < globalNx && j >= 0 && j < globalNy) {
+            let temp = globalIsSolid[i][j] ? globalT[i][j] : globalTInf;
+            document.getElementById('hoverInfo').innerText = `Cursor Temp: ${temp.toFixed(2)} °C`;
+        }
+    });
+    canvas.addEventListener('mouseleave', () => { document.getElementById('hoverInfo').innerText = `Cursor Temp: -- °C`; });
+</script>
+
+</body>
+</html>
